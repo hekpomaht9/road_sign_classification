@@ -207,9 +207,10 @@ class TrainModel:
 
         return None
 
-    def test(self, image_path):
+    @classmethod
+    def test(cls, model, image_path):
 
-        self.model.eval()
+        model.eval()
         with torch.no_grad():
             image = cv2.imread(image_path)
             raw_image = image.copy()
@@ -223,7 +224,7 @@ class TrainModel:
             image = (image - cfg.mean) / cfg.std
             image = np.transpose(image, (2, 0, 1))
             image = torch.unsqueeze(torch.tensor(image, dtype=torch.float, device=cfg.device), 0)
-            output = self.model(image)
+            output = model(image)
             pred = output.max(1, keepdim=True)[1]
             pred = torch.squeeze(pred).to(torch.device('cpu'))
             print(pred.numpy())
@@ -246,11 +247,10 @@ def train_model(pretrained_weights=None):
 
 def test_model(image_path, pretrained_weights='weights/val_acc_0.9739622114668652.pt'):
 
-    model = TrafficSignNet()
+    model = TrafficSignNet().to(cfg.device)
     if pretrained_weights is not None:
         model.load_state_dict(torch.load(pretrained_weights))
-    trainer = TrainModel(model)
-    trainer.test(image_path)
+    TrainModel.test(model, image_path)
 
 
 if __name__ == '__main__':
