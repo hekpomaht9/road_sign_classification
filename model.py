@@ -15,6 +15,8 @@ from lr_finder import LRFinder
 import time
 import matplotlib.pyplot as plt
 # import copy
+from skimage import exposure
+import warnings
 import os
 import random
 import multiprocessing
@@ -113,8 +115,7 @@ class TrainModel:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
         self.criterion = nn.CrossEntropyLoss()
-        # self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1,
-        #                                            gamma=cfg.learning_rate / cfg.n_epochs)
+        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.1)
         # self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min')
         # def lambda1(epoch):
             
@@ -126,7 +127,7 @@ class TrainModel:
         #     return lr
         
         # self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda1)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 4000, eta_min=0, last_epoch=-1)
+        self.scheduler_initial = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 4000, eta_min=0, last_epoch=-1)
         self.writer = SummaryWriter('logs/{}'.format(time.time()))
         # visualize graph
         # data = torch.zeros((cfg.batch_size, cfg.image_c,
@@ -162,7 +163,8 @@ class TrainModel:
             output = self.model(data)
             loss = self.criterion(output, target)
             
-            self.scheduler.step()
+            if epoch == 1:
+                self.scheduler_initial.step()
             
             loss.backward()
             self.optimizer.step()
@@ -211,7 +213,11 @@ class TrainModel:
         with torch.no_grad():
             image = cv2.imread(image_path)
             raw_image = image.copy()
+            raw_image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB)
             image = cv2.resize(image, (cfg.image_h, cfg.image_w), interpolation=cv2.INTER_AREA)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                image = exposure.equalize_adapthist(image)
             image = image.astype("float32")
             image /= 255
             image = (image - cfg.mean) / cfg.std
@@ -234,8 +240,9 @@ def train_model(pretrained_weights=None):
     trainer = TrainModel(model)
     # trainer.lr_finder(1e-2) # function plot initial learning rate
     for epoch in range(1, cfg.n_epochs + 1):
-        # trainer.train(epoch)
+        trainer.train(epoch)
         trainer.val(epoch)
+        trainer.scheduler.step()
 
 def test_model(image_path, pretrained_weights='weights/val_acc_0.9739622114668652.pt'):
 
@@ -247,7 +254,7 @@ def test_model(image_path, pretrained_weights='weights/val_acc_0.973962211466865
 
 
 if __name__ == '__main__':
-    image_path = ''
+    image_path = 'testing_images/00000/00000_00000.ppm'
     # train_model()
     test_model(image_path)
     print('complete')

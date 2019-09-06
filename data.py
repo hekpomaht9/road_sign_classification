@@ -5,6 +5,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import os
+import glob
 import json
 from skimage import exposure
 import warnings
@@ -71,28 +72,32 @@ def counting_classes(input_path):
     weight_coefs = weight_coefs.tolist()
     print(weight_coefs)
 
-    with open('weight_coef', 'w') as f:
+    with open('weight_coef.txt', 'w') as f:
         f.write(', '.join(map(str, weight_coefs)))
     return None
 
 
 class BalancedData:
 
-    def __init__(self, input_path=cfg.train_dir):
+    def __init__(self, input_path, phase):
 
         with open(input_path, 'r') as f:
             self.img_list = f.readlines()
         self.num_imgs = len(self.img_list)
-        self.label_counter = {}# label: number, img_name, flip, rotation_angle, gamma
+        self.label_counter = {}# label: number, img_name, rotation_angle, gamma
         for i in range(cfg.n_classes):
             self.label_counter[i] = {}
         self.end_flag = np.zeros(cfg.n_classes)
+        self.phase = phase
+        if self.phase == 'train':
+            self.num_res_images = cfg.resized_img_num_train
+        elif self.phase == 'test':
+            self.num_res_images = cfg.resized_img_num_test
 
-    def append_dict(self, img_name, img_label, img_flip, img_angle, img_gamma):
+    def append_dict(self, img_name, img_label, img_angle, img_gamma):
 
         self.label_counter[img_label][len(self.label_counter[img_label])] = {
             'name': img_name,
-            'flip': img_flip,
             'angle': img_angle,
             'gamma': img_gamma
         }
@@ -106,42 +111,40 @@ class BalancedData:
 
                 img_name = line.split(';')[0]
                 img_label = int(line.split(';')[-1])
-                img_flip = True if random.random() > 0.5 else False
                 img_angle = random.randint(-20, 20)
                 img_gamma = random.uniform(0.5, 1.5)
 
                 print(img_name + '  ' + str(sum(self.end_flag)))
 
-                if img_label not in self.label_counter.keys():
-                    self.append_dict(img_name, img_label, img_flip, img_angle, img_gamma)
-                elif len(self.label_counter[img_label]) == cfg.resized_img_num:
+                if len(self.label_counter[img_label]) == self.num_res_images:
                     self.end_flag[img_label] = 1
                     continue
                 else:
                     for data in self.label_counter[img_label].keys():
                         data = self.label_counter[img_label][data]
-                        if data['name'] == img_name and data['flip'] == img_flip and\
+                        if data['name'] == img_name  and\
                            data['angle'] == img_angle and data['gamma'] == img_gamma:
                             continue
-                    self.append_dict(img_name, img_label, img_flip, img_angle, img_gamma)
+                    self.append_dict(img_name, img_label, img_angle, img_gamma)
 
-        with open('resized_data.json', 'w') as fp:
+        with open('resized_data_{}.json'.format(self.phase), 'w') as fp:
             json.dump(self.label_counter, fp)
         print('complete')
 
-    def create_resized_images(self, input_path='resized_data.json'):
+    def create_resized_images(self):
 
+        input_path='resized_data_{}.json'.format(self.phase)
         assert os.path.exists(input_path)
 
         with open(input_path, 'r') as f:
             data_json = json.load(f)
 
         for image_label in data_json.keys():
-            if not os.path.exists(os.path.join('resize', image_label)):
-                os.makedirs(os.path.join('resize', image_label))
+            if not os.path.exists(os.path.join('resize_{}'.format(self.phase), image_label)):
+                os.makedirs(os.path.join('resize_{}'.format(self.phase), image_label))
             for image_idx in data_json[image_label].keys():
                 print(image_idx)
-                out_path = os.path.join('resize', image_label, '{0:05}.jpg'.format(int(image_idx)))
+                out_path = os.path.join('resize_{}'.format(self.phase), image_label, '{0:05}.jpg'.format(int(image_idx)))
                 # read as image
                 image = cv2.imread(data_json[image_label][image_idx]['name'])
                 image = cv2.resize(image, (cfg.image_h, cfg.image_w), interpolation=cv2.INTER_AREA)
@@ -151,9 +154,6 @@ class BalancedData:
                     look_ip_table[0, i] = np.clip(pow(i / 255.0,
                                                     data_json[image_label][image_idx]['gamma']) * 255.0, 0, 255)
                 image = cv2.LUT(image, look_ip_table)
-                # flip
-                if data_json[image_label][image_idx]['flip']:
-                    image = cv2.flip(image, 0)
                 # rotation
                 m = cv2.getRotationMatrix2D((cfg.image_h / 2, cfg.image_w / 2),
                                             data_json[image_label][image_idx]['angle'], 1.)
@@ -161,41 +161,60 @@ class BalancedData:
                 # save
                 cv2.imwrite(out_path, image)
 
-                with open('resized_images.txt', 'a') as f:
+                with open('res_{}.txt'.format(self.phase), 'a') as f:
                     f.write(out_path + ';{}\n'.format(image_label))
 
-    def create_text_files(self, input_path='resized_images.txt'):
 
-        assert os.path.exists(input_path)
+class FileCreator:
 
-        with open(input_path, 'r') as f:
-            image_list = f.readlines()
+    def __init__(self):
 
-        image_list.sort()
-        counter = np.zeros(cfg.n_classes)
+        self.dirs = {
+            'train': ['D:/task6/train_dataset/Training_1',
+                      'D:/task6/train_dataset/Training_2'],
 
-        for line in image_list:
+            'test':  ['D:/task6/test_dataset/Testing_1']
+        }
+        self.file = 0
 
-            line = line.strip()
-            print(line)
-            line_label = int(line.split(';')[1])
+    def create_txt(self, phase):
 
-            if counter[line_label] < cfg.resized_img_num * 0.9:
-                with open('train.txt', 'a') as f:
-                    f.write(line + '\n')
-                counter[line_label] += 1
-            else:
-                with open('test.txt', 'a') as f:
-                    f.write(line + '\n')
-                counter[line_label] += 1
+        for dir in self.dirs[phase]:
 
-        print('complete')
+            folders = os.listdir(dir)
+
+            for folder in folders:
+
+                self.file = glob.glob(os.path.join(dir, folder, '*.csv'))
+                self.file = self.file[0]
+
+                with open(self.file) as csvfile:
+                    lines = csvfile.readlines()
+
+                for i, line in enumerate(lines, 0):
+                    if i > 0:
+                        with open('{}.txt'.format(phase), 'a') as f:
+                            f.write(os.path.join(dir, folder, line))
+                print(folder)
+
+        return None
 
 
 if __name__ == '__main__':
 
+    creator = FileCreator()
+    for phase in ['train', 'test']:
+        creator.create_txt(phase)
+        
+        bd = BalancedData('{}.txt'.format(phase), phase)
+        bd.create_config_dict()
+        bd.create_resized_images()
+
+    cfg.train_dir = os.path.abspath("res_train.txt")
+    cfg.test_dir = os.path.abspath("res_test.txt")
+    with open(cfg.train_dir, "r") as f:
+        cfg.num_train_images = len(f.readlines())
+    with open(cfg.test_dir, "r") as f:
+        cfg.num_test_images = len(f.readlines())
+    cfg.computing_mean_std()
     counting_classes(cfg.train_dir)
-    # bd = BalancedData()
-    # bd.create_config_dict()
-    # bd.create_resized_images()
-    # bd.create_text_files()
